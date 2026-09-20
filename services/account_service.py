@@ -812,8 +812,9 @@ class AccountService:
         assert last_conflict is not None
         raise last_conflict
 
-    @staticmethod
+    @classmethod
     def _is_account_selectable(
+        cls,
         account: dict,
         *,
         allow_limited: bool,
@@ -832,7 +833,11 @@ class AccountService:
             ),
             refresh_confirmed_invalid=bool(account.get("refresh_token_invalid_at")),
         )
-        if credential_availability.status == "unavailable":
+        external_recovery_available = bool(
+            cls._normalize_credential_origin(account.get("credential_origin"))
+            and not account.get("credential_recovery_stopped_at")
+        )
+        if credential_availability.status == "unavailable" and not external_recovery_available:
             return False
         if account.get("last_remote_check_result") != "pending":
             return True
