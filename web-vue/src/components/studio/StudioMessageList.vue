@@ -64,6 +64,7 @@ import type {
   StudioImageAssetView,
   StudioImageCompareSource,
   StudioMessage,
+  StudioPreviewImage,
   StudioReferenceImage,
   StudioSearchImageGroup,
 } from './types'
@@ -87,7 +88,7 @@ const emit = defineEmits<{
   'retry-assistant': [message: StudioMessage]
   'delete-message': [messageId: string]
   'copy-message': [content: string]
-  preview: [src: string, name: string, localPath?: string]
+  preview: [preview: StudioPreviewImage]
   'reference-image': [asset: StudioImageAssetView, name: string, message: StudioMessage]
   'inpaint-image': [asset: StudioImageAssetView, name: string, message: StudioMessage]
   'compare-image': [source: StudioImageCompareSource, asset: StudioImageAssetView, name: string]
@@ -562,8 +563,8 @@ function handleMessageAction(action: StudioMessageActionKey, message: StudioMess
   else if (action === 'delete') emit('delete-message', message.id)
 }
 
-function forwardPreview(src: string, name: string, localPath = '') {
-  emit('preview', src, name, localPath)
+function forwardPreview(preview: StudioPreviewImage) {
+  emit('preview', preview)
 }
 
 function forwardReferenceImage(asset: StudioImageAssetView, name: string, message: StudioMessage) {

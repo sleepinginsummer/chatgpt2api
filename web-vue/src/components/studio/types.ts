@@ -87,8 +87,13 @@ export interface StudioImageForm {
   n: number
 }
 
-export interface StudioPreviewImage {
+export interface StudioPreviewItem {
   src: string
   name: string
   localPath?: string
+}
+
+export interface StudioPreviewImage extends StudioPreviewItem {
+  items?: StudioPreviewItem[]
+  index?: number
 }

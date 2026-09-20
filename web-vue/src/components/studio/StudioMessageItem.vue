@@ -200,7 +200,7 @@
                       type="button"
                       class="studio-result-media"
                       :class="{ 'has-image': Boolean(asset.url) }"
-                      @click="$emit('preview', asset.url, `结果 ${assetIndex + 1}`, asset.path)"
+                      @click="previewGeneratedImage(message, assetIndex)"
                     >
                       <img
                         v-if="asset.url"
@@ -308,7 +308,7 @@
           type="button"
           class="studio-message-reference-thumb"
           :title="reference.name"
-          @click="$emit('preview', reference.dataUrl, reference.name || `参考图 ${referenceIndex + 1}`)"
+          @click="$emit('preview', { src: reference.dataUrl, name: reference.name || `参考图 ${referenceIndex + 1}` })"
         >
           <img :src="reference.dataUrl" :alt="reference.name || `参考图 ${referenceIndex + 1}`" loading="lazy" />
         </button>
@@ -330,7 +330,7 @@ import {
   type EditableFileTaskDownloadType,
 } from './editableFileTaskView'
 import StudioMarkdownContent from './StudioMarkdownContent.vue'
-import type { StudioImageAssetView, StudioImageCompareSource, StudioMessage } from './types'
+import type { StudioImageAssetView, StudioImageCompareSource, StudioMessage, StudioPreviewImage } from './types'
 
 export type StudioMessageActionKey = 'copy' | 'edit' | 'resend' | 'fill' | 'resume-poll' | 'retry' | 'delete'
 
@@ -365,16 +365,31 @@ defineProps<{
   message: StudioMessageView
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   action: [key: StudioMessageActionKey, message: StudioMessage]
   'toggle-expanded': [message: StudioMessage]
   'open-search-sources': [message: StudioMessage]
   'citation-click': [href: string]
-  preview: [src: string, name: string, localPath?: string]
+  preview: [preview: StudioPreviewImage]
   'reference-image': [asset: StudioImageAssetView, name: string, message: StudioMessage]
   'inpaint-image': [asset: StudioImageAssetView, name: string, message: StudioMessage]
   'compare-image': [source: StudioImageCompareSource, asset: StudioImageAssetView, name: string]
 }>()
+
+function previewGeneratedImage(message: StudioMessageView, assetIndex: number) {
+  const selected = message.assets[assetIndex]
+  if (!selected?.url) return
+  const items = message.assets.flatMap((asset, index) => (asset.url
+    ? [{ src: asset.url, name: `结果 ${index + 1}`, localPath: asset.path }]
+    : []
+  ))
+  const index = message.assets
+    .slice(0, assetIndex)
+    .filter((asset) => Boolean(asset.url))
+    .length
+  emit('preview', { ...items[index], items, index })
+}
+
 
 const toast = useToast()
 const {

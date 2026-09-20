@@ -21,6 +21,7 @@ from services.account_import_job import (
     normalize_import_error as _normalize_import_error,
     normalize_import_job as _normalize_import_job,
 )
+from services.account_service import account_service
 from services.account_processing import (
     account_processing_slot,
     account_processing_worker_count,
@@ -737,6 +738,38 @@ def _account_credential_meta(account: dict) -> dict[str, str]:
         if key != "access_token" and value
     }
 
+def _build_sub2api_account_payload(
+    server_id: str,
+    account_id: str,
+    access_token: str,
+    meta: dict,
+) -> dict[str, object]:
+    """构造受信任导入数据，Sub2API 返回的 refresh_token 不进入本地账号库。"""
+    payload: dict[str, object] = {
+        "access_token": access_token,
+        "source_type": "codex",
+        "refresh_token": "",
+        "credential_origin": {
+            "provider": "sub2api",
+            "server_id": server_id,
+            "account_id": account_id,
+        },
+        "credential_recovery_attempts": 0,
+        "credential_recovery_stopped_at": None,
+        "credential_recovery_error": None,
+    }
+    email = _clean(meta.get("email"))
+    plan_type = _clean(meta.get("plan_type"))
+    id_token = _clean(meta.get("id_token"))
+    if email:
+        payload["email"] = email
+    if plan_type:
+        payload["type"] = plan_type
+    if id_token:
+        payload["id_token"] = id_token
+    return payload
+
+
 
 def _fetch_access_token_from_export(server: dict, account_id: str) -> tuple[str, dict]:
     base_url = _clean(server.get("base_url"))
@@ -995,20 +1028,12 @@ class Sub2APIImportService:
             batch_error = str(exc) or "data export failed"
 
         def append_payload(account_id: str, token: str, meta: dict) -> None:
-            payload: dict[str, object] = {
-                "access_token": token,
-                "source_type": "codex",
-            }
-            email = _clean(meta.get("email")) if isinstance(meta, dict) else ""
-            plan_type = _clean(meta.get("plan_type")) if isinstance(meta, dict) else ""
-            if email:
-                payload["email"] = email
-            if plan_type:
-                payload["type"] = plan_type
-            for credential_key in ("refresh_token", "id_token"):
-                credential_value = _clean(meta.get(credential_key)) if isinstance(meta, dict) else ""
-                if credential_value:
-                    payload[credential_key] = credential_value
+            payload = _build_sub2api_account_payload(
+                server_id,
+                account_id,
+                token,
+                meta if isinstance(meta, dict) else {},
+            )
             if target_group_id is not None:
                 payload["group_id"] = target_group_id
             else:
@@ -1069,5 +1094,19 @@ class Sub2APIImportService:
         import_job.finish(fetched_accounts)
 
 
+def _recover_sub2api_credentials(origin: dict[str, str]) -> dict[str, str]:
+    server_id = _clean(origin.get("server_id"))
+    account_id = _clean(origin.get("account_id"))
+    server = sub2api_config.get_server(server_id)
+    if server is None:
+        raise RuntimeError("Sub2API server is no longer configured")
+    access_token, meta = _fetch_access_token_from_export(server, account_id)
+    return {
+        "access_token": access_token,
+        "id_token": _clean(meta.get("id_token")),
+    }
+
+
 sub2api_config = Sub2APIConfig()
 sub2api_import_service = Sub2APIImportService(sub2api_config)
+account_service.bind_external_credential_recovery(_recover_sub2api_credentials)

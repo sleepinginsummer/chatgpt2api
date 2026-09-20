@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 3.2.3+syy.1 - 2026-09-20
+
++ [新增] Sub2API 远程导入账号保存来源绑定；AT 到期或被上游拒绝时回源更新 AT 与 ID Token，累计三次失败后永久停止自动恢复，手工重新导入可重置。
++ [优化] Sub2API 远程导入不再保存 RT，重新导入同一远端账号时更新原账号；其他来源账号继续使用原有 RT 刷新流程。
++ [新增] 对话画图的同批多图大图预览支持左右按钮、方向键和首尾循环切换，并显示当前位置。
++ [修复] 同步前端 lockfile 的 `picomatch` override，保证 GitHub Actions 与 Docker 构建可在干净环境执行 `npm ci`。
+
 ## 3.2.3 - 2026-09-09
 
 + [新增] Python 图片接口和共享模型列表支持 `gpt-image-2.5`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`，通过 ChatGPT Web 的 `auto` 路由兼容，不包含 `exact` 别名。

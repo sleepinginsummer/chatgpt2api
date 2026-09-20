@@ -6,9 +6,13 @@
     :copied="false"
     :show-actions="true"
     :show-tag-action="false"
+    :show-navigation="previewCount > 1"
+    :position-label="previewCount > 1 ? `${previewIndex + 1} / ${previewCount}` : ''"
     @close="$emit('close')"
     @copy="copyPreview"
     @download="$emit('download')"
+    @previous="$emit('previous')"
+    @next="$emit('next')"
   />
 </template>
 
@@ -26,7 +30,15 @@ const emit = defineEmits<{
   close: []
   copy: [value: string]
   download: []
+  previous: []
+  next: []
 }>()
+
+const previewCount = computed(() => props.preview?.items?.length || (props.preview ? 1 : 0))
+const previewIndex = computed(() => Math.min(
+  Math.max(0, Number(props.preview?.index || 0)),
+  Math.max(0, previewCount.value - 1),
+))
 
 const lightboxFile = computed<GalleryFile | null>(() => {
   const preview = props.preview

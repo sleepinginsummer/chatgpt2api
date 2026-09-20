@@ -88,15 +88,31 @@ export function useStudioReferenceRuntime(options: StudioReferenceRuntimeOptions
 
   function open(reference: StudioReference) {
     if (!reference.dataUrl) return
-    preview.value = {
+    openPreview({
       src: reference.dataUrl,
       name: reference.name,
+    })
+  }
+
+  function openPreview(nextPreview: StudioPreviewImage) {
+    const items = (nextPreview.items?.length ? nextPreview.items : [nextPreview])
+      .filter((item) => Boolean(item.src))
+    if (!items.length) return
+    const requestedIndex = Number.isFinite(nextPreview.index) ? Number(nextPreview.index) : 0
+    const index = Math.min(items.length - 1, Math.max(0, requestedIndex))
+    preview.value = {
+      ...items[index],
+      items: items.length > 1 ? items : undefined,
+      index,
     }
   }
 
-  function openPreview(src: string, name: string, localPath = '') {
-    if (!src) return
-    preview.value = { src, name, localPath }
+  function movePreview(offset: number) {
+    const current = preview.value
+    const items = current?.items
+    if (!current || !items || items.length <= 1) return
+    const index = ((Number(current.index || 0) + offset) % items.length + items.length) % items.length
+    preview.value = { ...items[index], items, index }
   }
 
   function closePreview() {
@@ -115,6 +131,7 @@ export function useStudioReferenceRuntime(options: StudioReferenceRuntimeOptions
     clear,
     open,
     openPreview,
+    movePreview,
     closePreview,
   }
 }

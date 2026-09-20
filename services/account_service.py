@@ -44,6 +44,7 @@ from utils.helper import anonymize_token
 
 _RemoteCheckMarker = tuple[str, str, str, str, bool | None, str, str]
 _CredentialGeneration = tuple[str, str, str]
+_ExternalCredentialRecovery = Callable[[dict[str, str]], dict[str, str]]
 
 
 
@@ -104,11 +105,16 @@ class RefreshCredentialsChangedError(RuntimeError):
         super().__init__(message)
 
 
+class ExternalCredentialRecoveryError(RuntimeError):
+    """Sub2API 凭据恢复失败或已经永久停止。"""
+
+
 class AccountService:
     """账号池服务，使用 token -> account 的 dict 保存账号。"""
 
     _ACCESS_TOKEN_REFRESH_SKEW_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
     _TOKEN_REFRESH_ERROR_BACKOFF_SECONDS = 5 * 60
+    _EXTERNAL_CREDENTIAL_RECOVERY_LIMIT = 3
     _POOL_HEALTH_REFRESH_BATCH_SIZE = 10
     _IMAGE_FAILURE_REFRESH_DEDUP_SECONDS = 30
     _ACCESS_TOKEN_FINGERPRINT_LIMIT = 8
@@ -150,6 +156,7 @@ class AccountService:
     ):
         self.storage = storage_backend
         self._proxy_reference_mutation = proxy_reference_mutation
+        self._external_credential_recovery: _ExternalCredentialRecovery | None = None
         self._lock = Lock()
         self._oauth_refresh_flights_lock = Lock()
         self._oauth_refresh_flights: dict[_CredentialGeneration, Future[str]] = {}
@@ -171,6 +178,13 @@ class AccountService:
         self._image_failure_refresh_started_at: dict[str, float] = {}
         self._token_aliases: dict[str, str] = {}
         self._cumulative_total = self._load_cumulative_total()
+
+    def bind_external_credential_recovery(
+        self,
+        recovery: _ExternalCredentialRecovery,
+    ) -> None:
+        """绑定远端凭据恢复 Adapter；账号生命周期仍由 AccountService 统一控制。"""
+        self._external_credential_recovery = recovery
 
     def _get_cumulative_file(self) -> Path:
         storage_path = getattr(self.storage, "file_path", None)
@@ -224,6 +238,7 @@ class AccountService:
             "last_remote_check_error",
             "last_refresh_error",
             "last_token_refresh_error",
+            "credential_recovery_error",
         ):
             value = account.get(key)
             if not isinstance(value, str):
@@ -914,6 +929,36 @@ class AccountService:
             return False
         return default
 
+    @staticmethod
+    def _normalize_credential_origin(value: object) -> dict[str, str] | None:
+        if not isinstance(value, dict):
+            return None
+        provider = str(value.get("provider") or "").strip().lower()
+        server_id = str(value.get("server_id") or "").strip()
+        account_id = str(value.get("account_id") or "").strip()
+        if provider != "sub2api" or not server_id or not account_id:
+            return None
+        return {
+            "provider": provider,
+            "server_id": server_id,
+            "account_id": account_id,
+        }
+
+    @classmethod
+    def _normalize_recovery_attempts(cls, value: object) -> int:
+        try:
+            attempts = int(value or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        return min(cls._EXTERNAL_CREDENTIAL_RECOVERY_LIMIT, max(0, attempts))
+
+    @classmethod
+    def _credential_origin_key(cls, value: object) -> tuple[str, str, str] | None:
+        origin = cls._normalize_credential_origin(value)
+        if origin is None:
+            return None
+        return origin["provider"], origin["server_id"], origin["account_id"]
+
     @classmethod
     def _normalize_account_status(cls, value: object, account: dict) -> str:
         if cls._bool_value(account.get("auto_disabled"), False):
@@ -1015,6 +1060,22 @@ class AccountService:
         if not source_type and str(normalized.get("export_type") or "").strip().lower() == "codex":
             source_type = "codex"
         normalized["source_type"] = self._normalize_source_type(source_type)
+        credential_origin = self._normalize_credential_origin(normalized.get("credential_origin"))
+        normalized["credential_origin"] = credential_origin
+        if credential_origin:
+            normalized["credential_recovery_attempts"] = self._normalize_recovery_attempts(
+                normalized.get("credential_recovery_attempts")
+            )
+            normalized["credential_recovery_stopped_at"] = (
+                normalized.get("credential_recovery_stopped_at") or None
+            )
+            normalized["credential_recovery_error"] = (
+                normalized.get("credential_recovery_error") or None
+            )
+        else:
+            normalized.pop("credential_recovery_attempts", None)
+            normalized.pop("credential_recovery_stopped_at", None)
+            normalized.pop("credential_recovery_error", None)
         if not has_explicit_quota and derived_quota is not None:
             normalized["quota"] = derived_quota
         normalized["quota"] = self._quota_value(normalized.get("quota"), 0)
@@ -1089,6 +1150,7 @@ class AccountService:
             "last_remote_check_error",
             "last_refresh_error",
             "last_token_refresh_error",
+            "credential_recovery_error",
         ):
             if normalized.get(key):
                 normalized[key] = sanitize_diagnostic_text(
@@ -1123,6 +1185,24 @@ class AccountService:
             return True
         remaining = cls._token_expires_in(access_token)
         return remaining is not None and remaining <= cls._ACCESS_TOKEN_REFRESH_SKEW_SECONDS
+
+    def _external_recovery_needed(
+        self,
+        account: dict,
+        access_token: str,
+        *,
+        force: bool,
+    ) -> bool:
+        if self._external_credential_recovery is None:
+            return False
+        if not self._normalize_credential_origin(account.get("credential_origin")):
+            return False
+        if account.get("credential_recovery_stopped_at"):
+            return False
+        if force:
+            return True
+        remaining = self._token_expires_in(access_token)
+        return remaining is not None and remaining <= 0
 
     @classmethod
     def _token_issued_at(cls, access_token: str) -> datetime | None:
@@ -1426,6 +1506,112 @@ class AccountService:
             rotations.append((new_token, alias_sources))
         return rotations
 
+    def _record_external_recovery_failure(
+        self,
+        access_token: str,
+        error: str,
+        *,
+        attempts: int,
+        expected_generation: _CredentialGeneration,
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            resolved = self._resolve_access_token_locked(access_token)
+            current = self._accounts.get(resolved)
+            if current is None or self._credential_generation(resolved, current) != expected_generation:
+                return False
+            next_item = dict(current)
+            normalized_attempts = self._normalize_recovery_attempts(attempts)
+            next_item["credential_recovery_attempts"] = normalized_attempts
+            next_item["credential_recovery_stopped_at"] = (
+                now
+                if normalized_attempts >= self._EXTERNAL_CREDENTIAL_RECOVERY_LIMIT
+                else None
+            )
+            next_item["credential_recovery_error"] = sanitize_diagnostic_text(
+                str(error or "Sub2API credential recovery failed")[:300],
+                sensitive_values=[
+                    current.get("access_token"),
+                    current.get("refresh_token"),
+                    current.get("id_token"),
+                ],
+            )
+            account = self._normalize_account(next_item)
+            if account is None:
+                return False
+            self._accounts[resolved] = account
+            return self._save_accounts(expected_credential_generation=expected_generation)
+
+    def _recover_external_credentials_owner(
+        self,
+        active_token: str,
+        account: dict,
+        *,
+        event: str,
+    ) -> str:
+        recovery = self._external_credential_recovery
+        origin = self._normalize_credential_origin(account.get("credential_origin"))
+        expected_generation = self._credential_generation(active_token, account)
+        if recovery is None or origin is None:
+            raise ExternalCredentialRecoveryError("Sub2API credential recovery is unavailable")
+        if account.get("credential_recovery_stopped_at"):
+            raise ExternalCredentialRecoveryError("Sub2API credential recovery permanently stopped")
+
+        attempts = self._normalize_recovery_attempts(
+            account.get("credential_recovery_attempts")
+        )
+        while attempts < self._EXTERNAL_CREDENTIAL_RECOVERY_LIMIT:
+            try:
+                token_data = recovery(origin)
+                recovered_token = str(token_data.get("access_token") or "").strip()
+                if not recovered_token:
+                    raise ExternalCredentialRecoveryError("Sub2API did not return an access token")
+                if recovered_token == active_token:
+                    raise ExternalCredentialRecoveryError("Sub2API still returned the rejected access token")
+                return self._apply_refreshed_tokens(
+                    active_token,
+                    {
+                        "access_token": recovered_token,
+                        "id_token": str(token_data.get("id_token") or "").strip(),
+                    },
+                    event,
+                    expected_access_token=active_token,
+                    expected_refresh_token="",
+                    expected_last_token_refresh_at=str(
+                        account.get("last_token_refresh_at") or ""
+                    ),
+                    external_recovery=True,
+                )
+            except RefreshCredentialsChangedError:
+                raise
+            except Exception as exc:
+                attempts += 1
+                error = str(exc or "Sub2API credential recovery failed")
+                recorded = self._record_external_recovery_failure(
+                    active_token,
+                    error,
+                    attempts=attempts,
+                    expected_generation=expected_generation,
+                )
+                if not recorded:
+                    raise RefreshCredentialsChangedError() from exc
+                if attempts < self._EXTERNAL_CREDENTIAL_RECOVERY_LIMIT:
+                    time.sleep(0.25 * attempts)
+                    continue
+                log_service.add(
+                    LOG_TYPE_ACCOUNT,
+                    "Sub2API 凭据恢复连续失败，已永久停止自动恢复",
+                    {
+                        "source": event,
+                        "token": anonymize_token(active_token),
+                        "attempts": attempts,
+                    },
+                )
+                raise ExternalCredentialRecoveryError(
+                    f"Sub2API credential recovery stopped after {attempts} attempts: {error}"
+                ) from exc
+        raise ExternalCredentialRecoveryError("Sub2API credential recovery permanently stopped")
+
     def _apply_refreshed_tokens(
         self,
         old_access_token: str,
@@ -1435,6 +1621,7 @@ class AccountService:
         expected_access_token: str | None = None,
         expected_refresh_token: str,
         expected_last_token_refresh_at: str | None = None,
+        external_recovery: bool = False,
     ) -> str:
         now = datetime.now(timezone.utc).isoformat()
         expected_access_token = expected_access_token or old_access_token
@@ -1462,6 +1649,11 @@ class AccountService:
                 next_item["refresh_token"] = str(token_data.get("refresh_token") or "").strip()
             if token_data.get("id_token"):
                 next_item["id_token"] = str(token_data.get("id_token") or "").strip()
+            if external_recovery:
+                next_item["refresh_token"] = ""
+                next_item["credential_recovery_attempts"] = 0
+                next_item["credential_recovery_stopped_at"] = None
+                next_item["credential_recovery_error"] = None
             self._scrub_diagnostic_secrets(
                 next_item,
                 [
@@ -1535,7 +1727,7 @@ class AccountService:
 
         log_service.add(
             LOG_TYPE_ACCOUNT,
-            "refresh_token 已刷新 access_token",
+            "已从 Sub2API 恢复 access_token" if external_recovery else "refresh_token 已刷新 access_token",
             {"source": event, "token": anonymize_token(new_token), "rotated": rotated},
         )
         return new_token
@@ -1621,9 +1813,16 @@ class AccountService:
                 and current_generation != expected_credentials
             ):
                 raise RefreshCredentialsChangedError()
+            external_recovery = False
             if not refresh_token:
-                return active_token
-            if account.get("refresh_token_invalid_at") and not force:
+                external_recovery = self._external_recovery_needed(
+                    account,
+                    active_token,
+                    force=force,
+                )
+                if not external_recovery:
+                    return active_token
+            if refresh_token and account.get("refresh_token_invalid_at") and not force:
                 remaining = self._token_expires_in(active_token)
                 if remaining is None or remaining > 0:
                     return active_token
@@ -1651,7 +1850,11 @@ class AccountService:
                         future = self._oauth_refresh_flights.get(key)
                         owner = future is None
                         if future is None:
-                            if image_busy or not needs_refresh or refresh_backoff:
+                            if (
+                                image_busy
+                                or not needs_refresh
+                                or (refresh_backoff and not external_recovery)
+                            ):
                                 return active_token
                             future = Future()
                             self._oauth_refresh_flights[key] = future
@@ -1660,19 +1863,26 @@ class AccountService:
                     future = self._oauth_refresh_flights.get(key)
                     owner = future is None
                     if future is None:
-                        if not needs_refresh or refresh_backoff:
+                        if not needs_refresh or (refresh_backoff and not external_recovery):
                             return active_token
                         future = Future()
                         self._oauth_refresh_flights[key] = future
             if owner:
                 try:
-                    result = self._refresh_access_token_owner(
-                        active_token,
-                        refresh_token,
-                        account,
-                        event=event,
-                        image_scope=image_scope,
-                    )
+                    if external_recovery:
+                        result = self._recover_external_credentials_owner(
+                            active_token,
+                            account,
+                            event=f"{event}:sub2api_recovery",
+                        )
+                    else:
+                        result = self._refresh_access_token_owner(
+                            active_token,
+                            refresh_token,
+                            account,
+                            event=event,
+                            image_scope=image_scope,
+                        )
                 except BaseException as exc:
                     future.set_exception(exc)
                 else:
@@ -2788,6 +2998,13 @@ class AccountService:
                     token,
                 )
             }
+            credential_origin_owners = {
+                origin_key: token
+                for token, account in self._accounts.items()
+                if (origin_key := self._credential_origin_key(account.get("credential_origin")))
+                is not None
+            }
+            pending_origin_rotations: list[tuple[tuple[str, str, str], set[str]]] = []
             for access_token, payload in deduped.items():
                 resolved_token = self._resolve_access_token_locked(access_token)
                 if resolved_token != access_token and resolved_token in self._accounts:
@@ -2796,6 +3013,27 @@ class AccountService:
                     outcomes_by_token[access_token] = "skipped"
                     continue
                 current = self._accounts.get(access_token)
+                origin_key = self._credential_origin_key(payload.get("credential_origin"))
+                replaced_origin = False
+                if current is None and origin_key is not None:
+                    origin_token = credential_origin_owners.get(origin_key)
+                    if origin_token and origin_token in self._accounts:
+                        alias_sources = {
+                            source
+                            for source in {origin_token, *self._token_aliases}
+                            if self._resolve_access_token_locked(source) == origin_token
+                        }
+                        current = self._accounts.pop(origin_token)
+                        previous_management_id = str(
+                            current.get("management_id") or ""
+                        ).strip().lower()
+                        if previous_management_id:
+                            management_id_owners[previous_management_id] = access_token
+                        credential_origin_owners[origin_key] = access_token
+                        pending_origin_rotations.append((origin_key, alias_sources))
+                        skipped += 1
+                        outcomes_by_token[access_token] = "skipped"
+                        replaced_origin = True
                 if current is None:
                     fingerprint = self._access_token_fingerprint(access_token)
                     if fingerprint in token_fingerprint_owners:
@@ -2807,7 +3045,7 @@ class AccountService:
                     added += 1
                     outcomes_by_token[access_token] = "added"
                     current = {"created_at": self._now()}
-                else:
+                elif not replaced_origin:
                     skipped += 1
                     outcomes_by_token[access_token] = "skipped"
                 incoming = self._refresh_token_aware_updates(
@@ -2837,6 +3075,8 @@ class AccountService:
                         used_management_ids,
                     )
                     self._accounts[access_token] = account
+                    if origin_key is not None:
+                        credential_origin_owners[origin_key] = access_token
                     if (
                         previous_management_id
                         and previous_management_id != account["management_id"]
@@ -2850,6 +3090,21 @@ class AccountService:
             self._save_accounts(
                 conflict_existing_tokens=conflict_existing_tokens,
             )
+            for origin_key, alias_sources in pending_origin_rotations:
+                rotated_token = next(
+                    (
+                        token
+                        for token, account in self._accounts.items()
+                        if self._credential_origin_key(account.get("credential_origin")) == origin_key
+                    ),
+                    None,
+                )
+                if rotated_token:
+                    self._move_account_runtime_token_locked(rotated_token, alias_sources)
+                else:
+                    self._remove_account_runtime_state_locked(alias_sources)
+            if pending_origin_rotations:
+                self._image_slot_condition.notify_all()
             for access_token in conflict_existing_tokens:
                 if outcomes_by_token.get(access_token) != "added":
                     continue

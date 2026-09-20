@@ -179,6 +179,8 @@
       @close="referenceRuntime.closePreview"
       @copy="copyText"
       @download="downloadPreviewImage"
+      @previous="referenceRuntime.movePreview(-1)"
+      @next="referenceRuntime.movePreview(1)"
     />
     <StudioInpaintModal
       :source="inpaintTarget?.source || null"
@@ -259,6 +261,7 @@ import type {
   StudioImageComparePreview,
   StudioImageCompareSource,
   StudioMessage,
+  StudioPreviewImage,
   StudioReferenceImage,
 } from '@/components/studio/types'
 import type { PromptLibraryItem } from '@/api/prompts'
@@ -757,8 +760,8 @@ function applyPromptTemplate(prompt: PromptLibraryItem) {
   isPromptPickerOpen.value = false
 }
 
-function openPreview(src: string, name: string, localPath = '') {
-  referenceRuntime.openPreview(src, name, localPath)
+function openPreview(preview: StudioPreviewImage) {
+  referenceRuntime.openPreview(preview)
 }
 
 async function copyText(value: string) {

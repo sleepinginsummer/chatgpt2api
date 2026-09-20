@@ -14,12 +14,35 @@
   >
     <template v-if="file">
       <CloseButton class="lightbox-close" label="关闭预览" tone="dark" @click="emit('close')" />
+      <div class="lightbox-media-stage">
+        <button
+          v-if="showNavigation"
+          type="button"
+          class="lightbox-nav is-previous"
+          title="上一张"
+          aria-label="上一张"
+          @click="emit('previous')"
+        >
+          <Icon icon="lucide:chevron-left" />
+        </button>
         <img
           :src="imageUrl"
           :alt="file.filename"
           class="lightbox-media"
         />
-        <div class="lightbox-info">
+        <button
+          v-if="showNavigation"
+          type="button"
+          class="lightbox-nav is-next"
+          title="下一张"
+          aria-label="下一张"
+          @click="emit('next')"
+        >
+          <Icon icon="lucide:chevron-right" />
+        </button>
+        <span v-if="showNavigation && positionLabel" class="lightbox-position">{{ positionLabel }}</span>
+      </div>
+      <div class="lightbox-info">
           <span class="max-w-[24rem] truncate" :title="file.path">{{ file.filename }}</span>
           <span v-if="sizeLabel">{{ sizeLabel }}</span>
           <span v-if="file.created_at">{{ file.created_at }}</span>
@@ -41,7 +64,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { Icon } from '@iconify/vue'
 import { CloseButton, ModalShell } from 'nanocat-ui'
 import type { GalleryFile } from '@/api/gallery'
@@ -55,11 +78,15 @@ const props = withDefaults(defineProps<{
   showDownloadAction?: boolean
   showCopyAction?: boolean
   showTagAction?: boolean
+  showNavigation?: boolean
+  positionLabel?: string
 }>(), {
   showActions: true,
   showDownloadAction: true,
   showCopyAction: true,
   showTagAction: true,
+  showNavigation: false,
+  positionLabel: '',
 })
 
 const emit = defineEmits<{
@@ -67,11 +94,27 @@ const emit = defineEmits<{
   (e: 'download', file: GalleryFile): void
   (e: 'copy', file: GalleryFile): void
   (e: 'edit-tags', file: GalleryFile): void
+  (e: 'previous'): void
+  (e: 'next'): void
 }>()
 
 const canShowDownload = computed(() => props.showActions && props.showDownloadAction)
 const canShowCopy = computed(() => props.showActions && props.showCopyAction)
 const canShowTag = computed(() => props.showActions && props.showTagAction)
+
+function handleNavigationKeydown(event: KeyboardEvent) {
+  if (!props.file || !props.showNavigation) return
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    emit('previous')
+  } else if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    emit('next')
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', handleNavigationKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', handleNavigationKeydown))
 
 function emitFile(event: 'download' | 'copy' | 'edit-tags') {
   if (!props.file) return
@@ -111,8 +154,72 @@ function emitFile(event: 'download' | 'copy' | 'edit-tags') {
   right: -4px;
 }
 
-.lightbox-media {
+.lightbox-media-stage {
+  position: relative;
+  display: flex;
   width: min(88vw, 80rem);
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+}
+
+.lightbox-nav {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 50%;
+  background: rgba(12, 18, 28, 0.72);
+  color: white;
+  cursor: pointer;
+  transform: translateY(-50%);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.lightbox-nav:hover {
+  border-color: rgba(255, 255, 255, 0.8);
+  background: rgba(12, 18, 28, 0.9);
+}
+
+.lightbox-nav:focus-visible {
+  outline: 2px solid white;
+  outline-offset: 2px;
+}
+
+.lightbox-nav.is-previous {
+  left: 12px;
+}
+
+.lightbox-nav.is-next {
+  right: 12px;
+}
+
+.lightbox-nav :deep(svg) {
+  width: 24px;
+  height: 24px;
+}
+
+.lightbox-position {
+  position: absolute;
+  z-index: 2;
+  bottom: 12px;
+  left: 50%;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(12, 18, 28, 0.72);
+  color: white;
+  font-size: 12px;
+  line-height: 1;
+  transform: translateX(-50%);
+}
+
+.lightbox-media {
+  width: 100%;
   max-width: 100%;
   max-height: 80vh;
   border-radius: var(--gallery-radius, 16px);
@@ -124,9 +231,20 @@ function emitFile(event: 'download' | 'copy' | 'edit-tags') {
     padding: 16px;
   }
 
-  .lightbox-media {
+  .lightbox-media-stage {
     width: calc(100vw - 32px);
+  }
+
+  .lightbox-media {
     max-height: 76vh;
+  }
+
+  .lightbox-nav.is-previous {
+    left: 8px;
+  }
+
+  .lightbox-nav.is-next {
+    right: 8px;
   }
 }
 

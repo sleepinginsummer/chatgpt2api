@@ -15,6 +15,7 @@ export const localLucideIconNames = [
   "check",
   "check-circle",
   "chevron-down",
+  "chevron-left",
   "chevron-right",
   "chevron-up",
   "circle-alert",
@@ -125,6 +126,9 @@ export const localLucideIcons = {
     },
     "chevron-down": {
       "body": "<path fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"m6 9l6 6l6-6\"/>"
+    },
+    "chevron-left": {
+      "body": "<path fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"m15 18l-6-6l6-6\"/>"
     },
     "chevron-right": {
       "body": "<path fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"m9 18l6-6l-6-6\"/>"
