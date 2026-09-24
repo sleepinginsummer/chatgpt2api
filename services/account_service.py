@@ -2046,6 +2046,38 @@ class AccountService:
                 and self._token_needs_refresh(token)
             ]
 
+    def list_external_credential_recovery_candidates(
+        self,
+    ) -> list[tuple[str, bool, _CredentialGeneration]]:
+        """筛选后台可回源的 Sub2API 账号，并返回强制标记和扫描时的凭据版本。"""
+        self._refresh_accounts_snapshot_if_stale()
+        with self._lock:
+            if self._external_credential_recovery is None:
+                return []
+            candidates: list[tuple[str, bool, _CredentialGeneration]] = []
+            for account in self._accounts.values():
+                if account.get("status") not in {"正常", "限流", "异常"}:
+                    continue
+                if account.get("last_remote_check_result") == "pending":
+                    continue
+                if not self._normalize_credential_origin(account.get("credential_origin")):
+                    continue
+                if (
+                    account.get("credential_recovery_stopped_at")
+                    or str(account.get("refresh_token") or "").strip()
+                ):
+                    continue
+                token = str(account.get("access_token") or "").strip()
+                if not token:
+                    continue
+                confirmed_invalid = account.get("last_remote_check_result") == "invalid"
+                remaining = self._token_expires_in(token)
+                if confirmed_invalid or (remaining is not None and remaining <= 0):
+                    candidates.append((
+                        token, confirmed_invalid, self._credential_generation(token, account),
+                    ))
+            return candidates
+
     def list_tokens(self) -> list[str]:
         self._refresh_accounts_snapshot_if_stale()
         with self._lock:

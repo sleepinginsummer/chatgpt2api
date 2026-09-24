@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Event, Thread
 
 from fastapi import HTTPException, Request
 
-from services.account_service import account_service
+from services.account_service import RefreshCredentialsChangedError, account_service
+from services.account_processing import account_processing_slot, account_processing_worker_count
 from services.auth_service import auth_service
 from services.config import config
 
@@ -72,6 +74,45 @@ def sanitize_sub2api_servers(servers: list[dict]) -> list[dict]:
     return [sanitized for server in servers if (sanitized := sanitize_sub2api_server(server)) is not None]
 
 
+def _recover_expired_sub2api_credentials() -> int:
+    """后台独立回源，不经过仅支持 RT 的管理员批量刷新。"""
+    candidates = account_service.list_external_credential_recovery_candidates()
+    if not candidates:
+        return 0
+
+    def recover(
+        token: str, confirmed_invalid: bool, generation: tuple[str, str, str],
+    ) -> None:
+        with account_processing_slot():
+            operation = (
+                account_service.force_refresh_access_token
+                if confirmed_invalid else account_service.ensure_access_token
+            )
+            operation(
+                token,
+                event="account_watcher:sub2api_recovery",
+                raise_on_error=True,
+                expected_credentials=generation,
+            )
+
+    failures = 0
+    with ThreadPoolExecutor(
+        max_workers=account_processing_worker_count(len(candidates))
+    ) as executor:
+        futures = [
+            executor.submit(recover, token, invalid, generation)
+            for token, invalid, generation in candidates
+        ]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except RefreshCredentialsChangedError:
+                continue
+            except Exception:
+                failures += 1
+    return failures
+
+
 def start_account_lifecycle_watcher(stop_event: Event) -> Thread:
     def worker() -> None:
         while not stop_event.is_set():
@@ -88,6 +129,10 @@ def start_account_lifecycle_watcher(stop_event: Event) -> Thread:
                     result = account_service.renew_expiring_access_tokens(expiring_tokens)
                     if result.get("errors"):
                         print(f"[account-watcher] renewal errors: {result['errors']}")
+
+                failures = _recover_expired_sub2api_credentials()
+                if failures:
+                    print(f"[account-watcher] Sub2API recovery failed for {failures} accounts")
 
                 limited_tokens = account_service.list_limited_tokens()
                 normal_tokens = account_service.list_normal_tokens()

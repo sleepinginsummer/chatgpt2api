@@ -45,23 +45,23 @@ implement a second save lifecycle. The UI owns polling and presentation only.
 
 ### Sub2API 凭据恢复
 
-Sub2API 导入只持久化 AT、ID Token 和远端来源绑定，不保存 RT。AT 已过期或被上游拒绝时，`AccountService` 通过 `Sub2APIImportService` 绑定的恢复 Adapter 按来源账号重新读取凭据；失败次数逐次持久化，累计三次后永久停止，手工重新导入同一来源账号会轮换 AT 并重置状态。
+Sub2API 导入只持久化 AT、ID Token 和远端来源绑定，不保存 RT。后台账号生命周期定时器会筛选 AT 已过期或被远程确认失效、仍有来源绑定且未停止恢复的账号，独立于 RT 到期刷新批处理触发回源；请求路径也可触发同一恢复。`AccountService` 通过 `Sub2APIImportService` 绑定的恢复 Adapter 按来源账号重新读取凭据；失败次数逐次持久化，累计三次后永久停止，手工重新导入同一来源账号会轮换 AT 并重置状态。
 
 ```mermaid
 sequenceDiagram
-    participant Request as 上游请求
+    participant Trigger as 上游请求或后台定时器
     participant Accounts as AccountService
     participant Source as Sub2API Adapter
     participant DB as Application Database
-    Request->>Accounts: AT 过期或被拒绝
+    Trigger->>Accounts: AT 过期或被远程确认失效
     Accounts->>Source: 按 server_id/account_id 获取最新凭据
     alt 获取成功
         Source-->>Accounts: AT + ID Token
         Accounts->>DB: 原子轮换凭据并清空 RT
-        Accounts-->>Request: 使用新 AT 重试
+        Accounts-->>Trigger: 使用新 AT 或结束本次后台检查
     else 获取失败
         Accounts->>DB: 持久化失败次数
-        Accounts-->>Request: 三次后永久停止自动恢复
+        Accounts-->>Trigger: 三次后永久停止自动恢复
     end
 ```
 
