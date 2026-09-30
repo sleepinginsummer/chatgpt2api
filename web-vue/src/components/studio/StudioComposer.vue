@@ -183,17 +183,28 @@
                   <div class="studio-size-section">
                     <div class="studio-size-label">比例</div>
                     <div class="studio-choice-grid is-ratio">
-                      <Button
+                      <HoverCard
                         v-for="option in ratioOptions"
                         :key="option.value"
-                        size="sm"
-                        :variant="selectedRatio === option.value ? 'primary' : 'outline'"
-                        block
-                        root-class="studio-choice-button"
-                        @click="selectRatio(option.value)"
+                        card-class="studio-ratio-popover"
                       >
-                        {{ option.label }}
-                      </Button>
+                        <Button
+                          size="sm"
+                          :variant="selectedRatio === option.value ? 'primary' : 'outline'"
+                          block
+                          root-class="studio-choice-button"
+                          @keydown.stop
+                          @click.stop="selectRatio(option.value)"
+                        >
+                          {{ option.label }}
+                        </Button>
+                        <template #content>
+                          <div v-if="option.previewStyle" class="studio-ratio-preview" aria-hidden="true">
+                            <div class="studio-ratio-outline" :style="option.previewStyle" />
+                          </div>
+                          <div class="studio-ratio-caption">{{ option.label }}</div>
+                        </template>
+                      </HoverCard>
                     </div>
                   </div>
                   <div class="studio-size-section">
@@ -277,7 +288,7 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Button } from 'nanocat-ui'
+import { Button, HoverCard } from 'nanocat-ui'
 import type { ActionMenuItem } from 'nanocat-ui'
 import FloatingActionMenu from '@/components/ai/FloatingActionMenu.vue'
 import { GroupedSelectMenu } from 'nanocat-ui'
@@ -428,7 +439,19 @@ const ratioOptions = computed(() => {
       seen.add(preset.ratio)
       return true
     })
-    .map((preset) => ({ label: preset.ratio === 'auto' ? '自动' : preset.ratio, value: preset.ratio }))
+    .map((preset) => {
+      const [width, height] = preset.ratio.split(':').map(Number)
+      // 比例来自尺寸预设；将长边固定为 80px，避免不同方向的示意撑开浮层。
+      const scale = 80 / Math.max(width, height)
+      return {
+        label: preset.ratio === 'auto' ? '自动' : preset.ratio,
+        value: preset.ratio,
+        previewStyle: preset.ratio === 'auto' ? undefined : {
+          width: `${width * scale}px`,
+          height: `${height * scale}px`,
+        },
+      }
+    })
 })
 const resolutionOptions = computed(() => {
   const order: ImageSizeResolution[] = ['auto', '1K', '2K', '4K']
@@ -1056,6 +1079,32 @@ onBeforeUnmount(() => {
 
 .studio-choice-grid.is-ratio {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+:global(.studio-ratio-popover) {
+  /* 示意浮层不承载操作，避免遮挡相邻的比例按钮。 */
+  pointer-events: none;
+}
+
+.studio-ratio-preview {
+  display: flex;
+  width: 80px;
+  height: 80px;
+  align-items: center;
+  justify-content: center;
+}
+
+.studio-ratio-outline {
+  box-sizing: border-box;
+  border: 2px solid hsl(var(--foreground));
+  border-radius: 2px;
+  background: hsl(var(--muted));
+}
+
+.studio-ratio-caption {
+  margin-top: 0.5rem;
+  text-align: center;
+  font-size: 0.75rem;
 }
 
 .studio-choice-button {
