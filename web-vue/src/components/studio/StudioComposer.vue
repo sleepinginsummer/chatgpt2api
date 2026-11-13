@@ -12,7 +12,7 @@
     <form
       class="chat-input-panel"
       :class="{ 'is-dragging': isDragging }"
-      @submit.prevent="$emit('submit')"
+      @submit.prevent
       @dragenter.prevent="handleDragEnter"
       @dragover.prevent="handleDragOver"
       @dragleave="handleDragLeave"
@@ -55,7 +55,7 @@
             :placeholder="placeholderText"
             @input="resizeTextarea"
             @paste="handlePaste"
-            @keydown.enter.exact.prevent="$emit('submit')"
+            @keydown.enter.exact="handlePromptEnter"
           ></textarea>
         </div>
 
@@ -325,12 +325,12 @@
             </button>
             <button
               v-else
-              type="submit"
+              type="button"
               class="chat-input-send"
               :class="text.trim() && !isSending ? 'chat-input-send-ready' : 'chat-input-send-idle'"
               :disabled="isSending || !text.trim()"
               :aria-label="submitAriaLabel"
-              @click.stop
+              @click.stop="$emit('submit')"
             >
               <Icon :icon="isSending ? 'lucide:loader-circle' : 'lucide:send-horizontal'" class="h-4 w-4" :class="{ 'animate-spin': isSending }" />
               <span class="chat-input-send-label">{{ submitLabel }}</span>
@@ -619,6 +619,12 @@ watch(
     if (format === 'svg' && (!gifEnabled || referenceCount > 0)) emit('update:imageOutputFormat', '')
   },
 )
+function handlePromptEnter(event: KeyboardEvent) {
+  // 生图模式保留原生换行，中文输入法确认候选词时也不提交。
+  if (props.mode === 'image' || event.isComposing) return
+  event.preventDefault()
+  emit('submit')
+}
 const imagePlaceholder = computed(() => props.references.length ? '描述你想如何修改参考图' : '输入你想生成的画面，也可以粘贴或拖入参考图')
 const chatPlaceholder = computed(() => props.references.length ? '描述你想让模型识别或分析的图片' : '输入消息，Enter 发送，Shift+Enter 换行')
 const filePlaceholder = computed(() => {
